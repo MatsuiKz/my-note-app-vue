@@ -6,6 +6,7 @@ import { signInWithGoogle, signOutFromGoogle } from './auth'
 import {
   addNote,
   fetchNotes,
+  deleteNote,
   toggleLike,
   isLiked,
   addComment,
@@ -100,6 +101,18 @@ async function toggleCommentSection(noteId: string) {
   commentsMap.value[noteId] = await fetchComments(noteId)
 }
 
+async function handleDeleteNote(noteId: string) {
+  if (!user.value) return
+  errorMsg.value = ''
+  try {
+    await deleteNote(noteId)
+    if (openCommentNoteId.value === noteId) openCommentNoteId.value = null
+    await loadNotes(user.value.uid)
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : '削除に失敗しました'
+  }
+}
+
 async function handleAddComment(noteId: string) {
   if (!user.value || !commentBodyMap.value[noteId]?.trim()) return
   errorMsg.value = ''
@@ -145,7 +158,16 @@ async function handleAddComment(noteId: string) {
 
       <ul class="note-list">
         <li v-for="note in notes" :key="note.id" class="note-card">
-          <h2>{{ note.title }}</h2>
+          <div class="note-header">
+            <h2>{{ note.title }}</h2>
+            <button
+              class="delete-btn"
+              :disabled="note.userId !== user!.uid"
+              @click="handleDeleteNote(note.id)"
+            >
+              削除
+            </button>
+          </div>
           <p>{{ note.body }}</p>
           <div class="note-meta">
             <div class="like-area">
@@ -270,9 +292,33 @@ header {
   padding: 1rem;
 }
 
+.note-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 0.5rem;
+}
+
 .note-card h2 {
-  margin: 0 0 0.5rem;
+  margin: 0;
   font-size: 1.1rem;
+}
+
+.delete-btn {
+  flex-shrink: 0;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+  color: #c0392b;
+  border: 1px solid #c0392b;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.delete-btn:disabled {
+  color: #ccc;
+  border-color: #ccc;
+  cursor: not-allowed;
 }
 
 .note-card p {

@@ -7,6 +7,7 @@ import {
   query,
   where,
   runTransaction,
+  writeBatch,
   increment,
   Timestamp,
 } from 'firebase/firestore'
@@ -95,6 +96,18 @@ export async function addComment(
       updatedAt: now,
     })
   })
+}
+
+export async function deleteNote(noteId: string): Promise<void> {
+  const [commentsSnap, likesSnap] = await Promise.all([
+    getDocs(query(collection(db, 'comments'), where('noteId', '==', noteId))),
+    getDocs(query(collection(db, 'likes'), where('noteId', '==', noteId))),
+  ])
+  const batch = writeBatch(db)
+  commentsSnap.docs.forEach((d) => batch.delete(d.ref))
+  likesSnap.docs.forEach((d) => batch.delete(d.ref))
+  batch.delete(doc(db, 'notes', noteId))
+  await batch.commit()
 }
 
 export async function fetchComments(noteId: string): Promise<Comment[]> {
