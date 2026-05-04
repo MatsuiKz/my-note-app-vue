@@ -1,11 +1,8 @@
 import {
   collection,
-  addDoc,
   getDocs,
   getDoc,
   doc,
-  setDoc,
-  deleteDoc,
   orderBy,
   query,
   where,
@@ -14,6 +11,7 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 import { db } from './firebase'
+import { checkActivityInTransaction } from './activityService'
 
 export interface Note {
   id: string
@@ -25,12 +23,16 @@ export interface Note {
 }
 
 export async function addNote(title: string, body: string, userId: string): Promise<void> {
-  await addDoc(collection(db, 'notes'), {
-    title,
-    body,
-    likeCount: 0,
-    userId,
-    createdAt: Timestamp.now(),
+  const newDocRef = doc(collection(db, 'notes'))
+  await runTransaction(db, async (transaction) => {
+    await checkActivityInTransaction(transaction, userId)
+    transaction.set(newDocRef, {
+      title,
+      body,
+      likeCount: 0,
+      userId,
+      createdAt: Timestamp.now(),
+    })
   })
 }
 
@@ -47,9 +49,12 @@ export async function toggleLike(noteId: string, userId: string): Promise<void> 
   await runTransaction(db, async (transaction) => {
     const likeSnap = await transaction.get(likeDocRef)
     if (likeSnap.exists()) {
+      // いいね取り消し：カウントしない
       transaction.delete(likeDocRef)
       transaction.update(noteDocRef, { likeCount: increment(-1) })
     } else {
+      // いいね：上限チェック
+      await checkActivityInTransaction(transaction, userId)
       transaction.set(likeDocRef, { noteId, userId })
       transaction.update(noteDocRef, { likeCount: increment(1) })
     }
@@ -78,13 +83,17 @@ export async function addComment(
   userId: string,
   body: string,
 ): Promise<void> {
+  const newDocRef = doc(collection(db, 'comments'))
   const now = Timestamp.now()
-  await addDoc(collection(db, 'comments'), {
-    noteId,
-    userId,
-    body,
-    createdAt: now,
-    updatedAt: now,
+  await runTransaction(db, async (transaction) => {
+    await checkActivityInTransaction(transaction, userId)
+    transaction.set(newDocRef, {
+      noteId,
+      userId,
+      body,
+      createdAt: now,
+      updatedAt: now,
+    })
   })
 }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { onAuthStateChanged, type User } from 'firebase/auth'
 import { auth } from './firebase'
 import { signInWithGoogle, signOutFromGoogle } from './auth'
@@ -13,6 +13,7 @@ import {
   type Note,
   type Comment,
 } from './noteService'
+import { getDailyCount, DAILY_LIMIT } from './activityService'
 import { format } from 'date-fns'
 
 const user = ref<User | null>(null)
@@ -21,23 +22,34 @@ const likedMap = ref<Record<string, boolean>>({})
 const title = ref('')
 const body = ref('')
 const loading = ref(false)
+const errorMsg = ref('')
 
 // コメント関連
 const openCommentNoteId = ref<string | null>(null)
 const commentsMap = ref<Record<string, Comment[]>>({})
 const commentBodyMap = ref<Record<string, string>>({})
 
+// 書き込み制限
+const dailyCount = ref(0)
+const isLimitReached = computed(() => dailyCount.value >= DAILY_LIMIT)
+const remainingCount = computed(() => DAILY_LIMIT - dailyCount.value)
+
 onMounted(() => {
   onAuthStateChanged(auth, async (u) => {
     user.value = u
     if (u) {
-      await loadNotes(u.uid)
+      await Promise.all([loadNotes(u.uid), refreshDailyCount(u.uid)])
     } else {
       notes.value = []
       likedMap.value = {}
+      dailyCount.value = 0
     }
   })
 })
+
+async function refreshDailyCount(userId: string) {
+  dailyCount.value = await getDailyCount(userId)
+}
 
 async function loadNotes(userId: string) {
   notes.value = await fetchNotes()
@@ -50,17 +62,28 @@ async function loadNotes(userId: string) {
 async function handleSubmit() {
   if (!title.value.trim() || !body.value.trim() || !user.value) return
   loading.value = true
-  await addNote(title.value, body.value, user.value.uid)
-  title.value = ''
-  body.value = ''
-  await loadNotes(user.value.uid)
-  loading.value = false
+  errorMsg.value = ''
+  try {
+    await addNote(title.value, body.value, user.value.uid)
+    title.value = ''
+    body.value = ''
+    await Promise.all([loadNotes(user.value.uid), refreshDailyCount(user.value.uid)])
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : '投稿に失敗しました'
+  } finally {
+    loading.value = false
+  }
 }
 
 async function handleToggleLike(noteId: string) {
   if (!user.value) return
-  await toggleLike(noteId, user.value.uid)
-  await loadNotes(user.value.uid)
+  errorMsg.value = ''
+  try {
+    await toggleLike(noteId, user.value.uid)
+    await Promise.all([loadNotes(user.value.uid), refreshDailyCount(user.value.uid)])
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : 'いいねに失敗しました'
+  }
 }
 
 function formatDate(timestamp: { toDate(): Date } | null): string {
@@ -79,9 +102,19 @@ async function toggleCommentSection(noteId: string) {
 
 async function handleAddComment(noteId: string) {
   if (!user.value || !commentBodyMap.value[noteId]?.trim()) return
-  await addComment(noteId, user.value.uid, commentBodyMap.value[noteId])
-  commentBodyMap.value[noteId] = ''
-  commentsMap.value[noteId] = await fetchComments(noteId)
+  errorMsg.value = ''
+  try {
+    await addComment(noteId, user.value.uid, commentBodyMap.value[noteId])
+    commentBodyMap.value[noteId] = ''
+    await Promise.all([
+      (async () => {
+        commentsMap.value[noteId] = await fetchComments(noteId)
+      })(),
+      refreshDailyCount(user.value.uid),
+    ])
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : 'コメントに失敗しました'
+  }
 }
 </script>
 
@@ -91,17 +124,22 @@ async function handleAddComment(noteId: string) {
       <h1>My Note App</h1>
       <div v-if="user" class="user-info">
         <span>{{ user.displayName }}</span>
+        <span class="daily-count" :class="{ 'limit-reached': isLimitReached }">
+          本日の残り書き込み: {{ remainingCount }} / {{ DAILY_LIMIT }}件
+        </span>
         <button @click="signOutFromGoogle">ログアウト</button>
       </div>
       <button v-else @click="signInWithGoogle">Googleでログイン</button>
     </header>
 
     <template v-if="user">
+      <p v-if="errorMsg" class="error-msg">{{ errorMsg }}</p>
+
       <form class="note-form" @submit.prevent="handleSubmit">
         <input v-model="title" type="text" placeholder="タイトル" required />
         <textarea v-model="body" placeholder="本文" required></textarea>
-        <button type="submit" :disabled="loading">
-          {{ loading ? '投稿中...' : '投稿' }}
+        <button type="submit" :disabled="loading || isLimitReached">
+          {{ loading ? '投稿中...' : isLimitReached ? '本日の上限に達しました' : '投稿' }}
         </button>
       </form>
 
@@ -111,7 +149,11 @@ async function handleAddComment(noteId: string) {
           <p>{{ note.body }}</p>
           <div class="note-meta">
             <div class="like-area">
-              <button class="like-btn" @click="handleToggleLike(note.id)">
+              <button
+                class="like-btn"
+                :disabled="isLimitReached && !likedMap[note.id]"
+                @click="handleToggleLike(note.id)"
+              >
                 {{ likedMap[note.id] ? 'いいね済み' : 'いいね' }}
               </button>
               <span>{{ note.likeCount }}</span>
@@ -131,7 +173,9 @@ async function handleAddComment(noteId: string) {
                   placeholder="コメントを入力"
                   required
                 ></textarea>
-                <button type="submit">投稿</button>
+                <button type="submit" :disabled="isLimitReached">
+                  {{ isLimitReached ? '本日の上限に達しました' : '投稿' }}
+                </button>
               </form>
 
               <ul class="comment-list">
@@ -161,12 +205,35 @@ header {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 1.5rem;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 .user-info {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.daily-count {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.daily-count.limit-reached {
+  color: #c0392b;
+  font-weight: bold;
+}
+
+.error-msg {
+  color: #c0392b;
+  background: #fdecea;
+  border: 1px solid #f5c6cb;
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
 }
 
 .note-form {
@@ -231,6 +298,11 @@ header {
   padding: 0.2rem 0.6rem;
   font-size: 0.8rem;
   cursor: pointer;
+}
+
+.like-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .comment-section {
